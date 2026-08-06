@@ -1,0 +1,148 @@
+name: AURUM-V external installation proof
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  prove-external-installation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out demo repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install demo signing dependency
+        run: python -m pip install --disable-pip-version-check cryptography==50.0.0
+
+      - name: Generate ephemeral signed approval bundle
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          bundle = Path("examples/approval-bundle")
+          bundle.mkdir(parents=True, exist_ok=True)
+
+          private_key = Ed25519PrivateKey.generate()
+          public_key = private_key.public_key()
+
+          artifact = {
+              "artifact_version": "1.0",
+              "artifact_id": "AV-DEMO-APPROVAL-001",
+              "artifact_type": "approval",
+              "decision": "APPROVED",
+              "policy_id": "POL-DEMO-001",
+              "policy_version": "1.0",
+              "subject_id": "github-actions-demo",
+              "issued_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+              "canonicalization": "AURUMV-C14N-JSON-1",
+              "signature_algorithm": "Ed25519",
+              "key_id": "ephemeral-demo-key",
+              "payload": {
+                  "decision_id": "AV-DEMO-DEC-001",
+                  "decision": "APPROVED",
+                  "repository": os.environ["EXPECTED_REPOSITORY"],
+                  "pull_request_number": 0,
+                  "expected_head_sha": os.environ["EXPECTED_HEAD_SHA"],
+              },
+          }
+
+          canonical = json.dumps(
+              artifact,
+              sort_keys=True,
+              separators=(",", ":"),
+              ensure_ascii=False,
+              allow_nan=False,
+          ).encode("utf-8")
+
+          (bundle / "approval.json").write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+          (bundle / "approval.sig").write_text(
+              base64.b64encode(private_key.sign(canonical)).decode("ascii") + "\n",
+              encoding="utf-8",
+          )
+
+          public_pem = public_key.public_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PublicFormat.SubjectPublicKeyInfo,
+          )
+          (bundle / "public_key.pem").write_bytes(public_pem)
+
+          public_der = public_key.public_bytes(
+              encoding=serialization.Encoding.DER,
+              format=serialization.PublicFormat.SubjectPublicKeyInfo,
+          )
+          manifest = (
+              f"{hashlib.sha256(canonical).hexdigest()}  approval.json\n"
+              f"{hashlib.sha256(public_der).hexdigest()}  public_key.pem\n"
+          )
+          (bundle / "SHA256SUMS").write_text(manifest, encoding="utf-8")
+          PY
+
+      - name: Verify valid signed approval through Marketplace Action
+        id: verified
+        uses: bradshawdanni-collab/aurum-v-action@v1.0.0
+        with:
+          approval-bundle: examples/approval-bundle
+          expected-repository: ${{ github.repository }}
+          expected-pull-request-number: "0"
+          expected-head-sha: ${{ github.sha }}
+
+      - name: Assert VERIFIED output
+        env:
+          RESULT: ${{ steps.verified.outputs.result }}
+          DENIAL_CODE: ${{ steps.verified.outputs.denial-code }}
+        run: |
+          test "$RESULT" = "VERIFIED"
+          test -z "$DENIAL_CODE"
+          echo "External Marketplace installation returned VERIFIED."
+
+      - name: Tamper with the signed artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("examples/approval-bundle/approval.json")
+          artifact = json.loads(path.read_text(encoding="utf-8"))
+          artifact["payload"]["repository"] = "attacker/modified-repository"
+          path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Verify tampered approval is rejected
+        id: tampered
+        continue-on-error: true
+        uses: bradshawdanni-collab/aurum-v-action@v1.0.0
+        with:
+          approval-bundle: examples/approval-bundle
+          expected-repository: ${{ github.repository }}
+          expected-pull-request-number: "0"
+          expected-head-sha: ${{ github.sha }}
+
+      - name: Assert fail-closed tamper result
+        env:
+          STEP_OUTCOME: ${{ steps.tampered.outcome }}
+          RESULT: ${{ steps.tampered.outputs.result }}
+        run: |
+          test "$STEP_OUTCOME" = "failure"
+          test "$RESULT" = "TAMPERED"
+          echo "Modified artifact was rejected as TAMPERED."
