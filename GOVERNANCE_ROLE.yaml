@@ -1,0 +1,21 @@
+schema_version: "1.0"
+repository: "bradshawdanni-collab/aurum-v-action-demo"
+repository_role: "external-installation-proof"
+authoritative_for:
+  - "external installation proof for the published AURUM-V GitHub Action"
+  - "demo workflow behavior and bounded external-consumer evidence"
+not_authoritative_for:
+  - "admissibility-state definitions"
+  - "kernel invariants"
+  - "state-transition contracts"
+  - "execution authority"
+  - "application or Base44 product authority"
+  - "domain evidence truth"
+  - "independent certification"
+canonical_upstream:
+  repository: "bradshawdanni-collab/aurum-v-action"
+  version: "1.0.0"
+  commit: "98be599b683a3a3d1e206b45b53fe6b4b1dedf36"
+required_reviews:
+  - "Action implementation reviewer"
+status: "active"
